@@ -1,0 +1,9 @@
+image,class,confidence,x_center,y_center,width,height
+bus.jpg,person,tensor(0.64439),32.5,713.5,65.0,321.0
+bus.jpg,bus,tensor(0.81633),412.5,515.0,795.0,590.0
+bus.jpg,person,tensor(0.84940),741.5,638.0,137.0,474.0
+bus.jpg,person,tensor(0.86063),144.5,654.0,189.0,518.0
+bus.jpg,person,tensor(0.86478),283.0,641.0,128.0,466.0
+zidane.jpg,tie,tensor(0.25284),470.5,574.5,61.0,275.0
+zidane.jpg,person,tensor(0.62056),486.5,458.5,733.0,521.0
+zidane.jpg,person,tensor(0.85725),947.0,382.5,406.0,675.0

@@ -1,10 +1,8 @@
-# Ultralytics YOLOv5 🚀, AGPL-3.0 license
 """PyTorch utils."""
 
 import math
 import os
 import platform
-import subprocess
 import time
 import warnings
 from contextlib import contextmanager
@@ -12,10 +10,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.general import LOGGER, check_version, colorstr, file_date, git_describe
 
@@ -41,75 +37,6 @@ def smart_inference_mode(torch_1_9=check_version(torch.__version__, "1.9.0")):
         return (torch.inference_mode if torch_1_9 else torch.no_grad)()(fn)
 
     return decorate
-
-
-def smartCrossEntropyLoss(label_smoothing=0.0):
-    """Returns a CrossEntropyLoss with optional label smoothing for torch>=1.10.0; warns if smoothing on lower
-    versions.
-    """
-    if check_version(torch.__version__, "1.10.0"):
-        return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
-    if label_smoothing > 0:
-        LOGGER.warning(f"WARNING ⚠️ label smoothing {label_smoothing} requires torch>=1.10.0")
-    return nn.CrossEntropyLoss()
-
-
-def smart_DDP(model):
-    """Initializes DistributedDataParallel (DDP) for model training, respecting torch version constraints."""
-    assert not check_version(torch.__version__, "1.12.0", pinned=True), (
-        "torch==1.12.0 torchvision==0.13.0 DDP training is not supported due to a known issue. "
-        "Please upgrade or downgrade torch to use DDP. See https://github.com/ultralytics/yolov5/issues/8395"
-    )
-    if check_version(torch.__version__, "1.11.0"):
-        return DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK, static_graph=True)
-    else:
-        return DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
-
-
-def reshape_classifier_output(model, n=1000):
-    """Reshapes last layer of model to match class count 'n', supporting Classify, Linear, Sequential types."""
-    from models.common import Classify
-
-    name, m = list((model.model if hasattr(model, "model") else model).named_children())[-1]  # last module
-    if isinstance(m, Classify):  # YOLOv5 Classify() head
-        if m.linear.out_features != n:
-            m.linear = nn.Linear(m.linear.in_features, n)
-    elif isinstance(m, nn.Linear):  # ResNet, EfficientNet
-        if m.out_features != n:
-            setattr(model, name, nn.Linear(m.in_features, n))
-    elif isinstance(m, nn.Sequential):
-        types = [type(x) for x in m]
-        if nn.Linear in types:
-            i = len(types) - 1 - types[::-1].index(nn.Linear)  # last nn.Linear index
-            if m[i].out_features != n:
-                m[i] = nn.Linear(m[i].in_features, n)
-        elif nn.Conv2d in types:
-            i = len(types) - 1 - types[::-1].index(nn.Conv2d)  # last nn.Conv2d index
-            if m[i].out_channels != n:
-                m[i] = nn.Conv2d(m[i].in_channels, n, m[i].kernel_size, m[i].stride, bias=m[i].bias is not None)
-
-
-@contextmanager
-def torch_distributed_zero_first(local_rank: int):
-    """Context manager ensuring ordered operations in distributed training by making all processes wait for the leading
-    process.
-    """
-    if local_rank not in [-1, 0]:
-        dist.barrier(device_ids=[local_rank])
-    yield
-    if local_rank == 0:
-        dist.barrier(device_ids=[0])
-
-
-def device_count():
-    """Returns the number of available CUDA devices; works on Linux and Windows by invoking `nvidia-smi`."""
-    assert platform.system() in ("Linux", "Windows"), "device_count() only supported on Linux or Windows"
-    try:
-        cmd = "nvidia-smi -L | wc -l" if platform.system() == "Linux" else 'nvidia-smi -L | find /c /v ""'  # Windows
-        return int(subprocess.run(cmd, shell=True, capture_output=True, check=True).stdout.decode().split()[-1])
-    except Exception:
-        return 0
-
 
 def select_device(device="", batch_size=0, newline=True):
     """Selects computing device (CPU, CUDA GPU, MPS) for YOLOv5 model deployment, logging device info."""
@@ -207,17 +134,6 @@ def profile(input, ops, n=10, device=None):
             torch.cuda.empty_cache()
     return results
 
-
-def is_parallel(model):
-    """Checks if the model is using Data Parallelism (DP) or Distributed Data Parallelism (DDP)."""
-    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
-
-
-def de_parallel(model):
-    """Returns a single-GPU model by removing Data Parallelism (DP) or Distributed Data Parallelism (DDP) if applied."""
-    return model.module if is_parallel(model) else model
-
-
 def initialize_weights(model):
     """Initializes weights of Conv2d, BatchNorm2d, and activations (Hardswish, LeakyReLU, ReLU, ReLU6, SiLU) in the
     model.
@@ -231,34 +147,6 @@ def initialize_weights(model):
             m.momentum = 0.03
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
-
-
-def find_modules(model, mclass=nn.Conv2d):
-    """Finds and returns list of layer indices in `model.module_list` matching the specified `mclass`."""
-    return [i for i, m in enumerate(model.module_list) if isinstance(m, mclass)]
-
-
-def sparsity(model):
-    """Calculates and returns the global sparsity of a model as the ratio of zero-valued parameters to total
-    parameters.
-    """
-    a, b = 0, 0
-    for p in model.parameters():
-        a += p.numel()
-        b += (p == 0).sum()
-    return b / a
-
-
-def prune(model, amount=0.3):
-    """Prunes Conv2d layers in a model to a specified sparsity using L1 unstructured pruning."""
-    import torch.nn.utils.prune as prune
-
-    for name, m in model.named_modules():
-        if isinstance(m, nn.Conv2d):
-            prune.l1_unstructured(m, name="weight", amount=amount)  # prune
-            prune.remove(m, "weight")  # make permanent
-    LOGGER.info(f"Model pruned to {sparsity(model):.3g} global sparsity")
-
 
 def fuse_conv_and_bn(conv, bn):
     """
@@ -346,137 +234,3 @@ def copy_attr(a, b, include=(), exclude=()):
             continue
         else:
             setattr(a, k, v)
-
-
-def smart_optimizer(model, name="Adam", lr=0.001, momentum=0.9, decay=1e-5):
-    """
-    Initializes YOLOv5 smart optimizer with 3 parameter groups for different decay configurations.
-
-    Groups are 0) weights with decay, 1) weights no decay, 2) biases no decay.
-    """
-    g = [], [], []  # optimizer parameter groups
-    bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)  # normalization layers, i.e. BatchNorm2d()
-    for v in model.modules():
-        for p_name, p in v.named_parameters(recurse=0):
-            if p_name == "bias":  # bias (no decay)
-                g[2].append(p)
-            elif p_name == "weight" and isinstance(v, bn):  # weight (no decay)
-                g[1].append(p)
-            else:
-                g[0].append(p)  # weight (with decay)
-
-    if name == "Adam":
-        optimizer = torch.optim.Adam(g[2], lr=lr, betas=(momentum, 0.999))  # adjust beta1 to momentum
-    elif name == "AdamW":
-        optimizer = torch.optim.AdamW(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
-    elif name == "RMSProp":
-        optimizer = torch.optim.RMSprop(g[2], lr=lr, momentum=momentum)
-    elif name == "SGD":
-        optimizer = torch.optim.SGD(g[2], lr=lr, momentum=momentum, nesterov=True)
-    else:
-        raise NotImplementedError(f"Optimizer {name} not implemented.")
-
-    optimizer.add_param_group({"params": g[0], "weight_decay": decay})  # add g0 with weight_decay
-    optimizer.add_param_group({"params": g[1], "weight_decay": 0.0})  # add g1 (BatchNorm2d weights)
-    LOGGER.info(
-        f"{colorstr('optimizer:')} {type(optimizer).__name__}(lr={lr}) with parameter groups "
-        f'{len(g[1])} weight(decay=0.0), {len(g[0])} weight(decay={decay}), {len(g[2])} bias'
-    )
-    return optimizer
-
-
-def smart_hub_load(repo="ultralytics/yolov5", model="yolov5s", **kwargs):
-    """YOLOv5 torch.hub.load() wrapper with smart error handling, adjusting torch arguments for compatibility."""
-    if check_version(torch.__version__, "1.9.1"):
-        kwargs["skip_validation"] = True  # validation causes GitHub API rate limit errors
-    if check_version(torch.__version__, "1.12.0"):
-        kwargs["trust_repo"] = True  # argument required starting in torch 0.12
-    try:
-        return torch.hub.load(repo, model, **kwargs)
-    except Exception:
-        return torch.hub.load(repo, model, force_reload=True, **kwargs)
-
-
-def smart_resume(ckpt, optimizer, ema=None, weights="yolov5s.pt", epochs=300, resume=True):
-    """Resumes training from a checkpoint, updating optimizer, ema, and epochs, with optional resume verification."""
-    best_fitness = 0.0
-    start_epoch = ckpt["epoch"] + 1
-    if ckpt["optimizer"] is not None:
-        optimizer.load_state_dict(ckpt["optimizer"])  # optimizer
-        best_fitness = ckpt["best_fitness"]
-    if ema and ckpt.get("ema"):
-        ema.ema.load_state_dict(ckpt["ema"].float().state_dict())  # EMA
-        ema.updates = ckpt["updates"]
-    if resume:
-        assert start_epoch > 0, (
-            f"{weights} training to {epochs} epochs is finished, nothing to resume.\n"
-            f"Start a new training without --resume, i.e. 'python train.py --weights {weights}'"
-        )
-        LOGGER.info(f"Resuming training from {weights} from epoch {start_epoch} to {epochs} total epochs")
-    if epochs < start_epoch:
-        LOGGER.info(f"{weights} has been trained for {ckpt['epoch']} epochs. Fine-tuning for {epochs} more epochs.")
-        epochs += ckpt["epoch"]  # finetune additional epochs
-    return best_fitness, start_epoch, epochs
-
-
-class EarlyStopping:
-    """Implements early stopping to halt training when no improvement is observed for a specified number of epochs."""
-
-    def __init__(self, patience=30):
-        """Initializes simple early stopping mechanism for YOLOv5, with adjustable patience for non-improving epochs."""
-        self.best_fitness = 0.0  # i.e. mAP
-        self.best_epoch = 0
-        self.patience = patience or float("inf")  # epochs to wait after fitness stops improving to stop
-        self.possible_stop = False  # possible stop may occur next epoch
-
-    def __call__(self, epoch, fitness):
-        """Evaluates if training should stop based on fitness improvement and patience, returning a boolean."""
-        if fitness >= self.best_fitness:  # >= 0 to allow for early zero-fitness stage of training
-            self.best_epoch = epoch
-            self.best_fitness = fitness
-        delta = epoch - self.best_epoch  # epochs without improvement
-        self.possible_stop = delta >= (self.patience - 1)  # possible stop may occur next epoch
-        stop = delta >= self.patience  # stop training if patience exceeded
-        if stop:
-            LOGGER.info(
-                f"Stopping training early as no improvement observed in last {self.patience} epochs. "
-                f"Best results observed at epoch {self.best_epoch}, best model saved as best.pt.\n"
-                f"To update EarlyStopping(patience={self.patience}) pass a new patience value, "
-                f"i.e. `python train.py --patience 300` or use `--patience 0` to disable EarlyStopping."
-            )
-        return stop
-
-
-class ModelEMA:
-    """Updated Exponential Moving Average (EMA) from https://github.com/rwightman/pytorch-image-models
-    Keeps a moving average of everything in the model state_dict (parameters and buffers)
-    For EMA details see https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage.
-    """
-
-    def __init__(self, model, decay=0.9999, tau=2000, updates=0):
-        """Initializes EMA with model parameters, decay rate, tau for decay adjustment, and update count; sets model to
-        evaluation mode.
-        """
-        self.ema = deepcopy(de_parallel(model)).eval()  # FP32 EMA
-        self.updates = updates  # number of EMA updates
-        self.decay = lambda x: decay * (1 - math.exp(-x / tau))  # decay exponential ramp (to help early epochs)
-        for p in self.ema.parameters():
-            p.requires_grad_(False)
-
-    def update(self, model):
-        """Updates the Exponential Moving Average (EMA) parameters based on the current model's parameters."""
-        self.updates += 1
-        d = self.decay(self.updates)
-
-        msd = de_parallel(model).state_dict()  # model state_dict
-        for k, v in self.ema.state_dict().items():
-            if v.dtype.is_floating_point:  # true for FP16 and FP32
-                v *= d
-                v += (1 - d) * msd[k].detach()
-        # assert v.dtype == msd[k].dtype == torch.float32, f'{k}: EMA {v.dtype} and model {msd[k].dtype} must be FP32'
-
-    def update_attr(self, model, include=(), exclude=("process_group", "reducer")):
-        """Updates EMA attributes by copying specified attributes from model to EMA, excluding certain attributes by
-        default.
-        """
-        copy_attr(self.ema, model, include, exclude)

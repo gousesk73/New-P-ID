@@ -47,12 +47,46 @@ brew install tesseract
 
 ---
 
+## **Fix Import Error in CRAFT-Text-Detector**
+If you encounter the following error:
+```python
+ImportError: cannot import name 'model_urls' from 'torchvision.models.vgg'
+```
+Follow these steps to fix it:
+
+### **Option 1: Modify the CRAFT Code**
+1. Open the following file in a text editor:
+   ```
+   site-packages/craft_text_detector/models/basenet/vgg16_bn.py
+   ```
+2. Find the line:
+   ```python
+   from torchvision.models.vgg import model_urls
+   ```
+3. Replace it with:
+   ```python
+   from torchvision.models import VGG16_BN_Weights
+   ```
+4. Find where `model_urls['vgg16_bn']` is used and replace it with:
+   ```python
+   weights = VGG16_BN_Weights.DEFAULT
+   state_dict = weights.get_state_dict(progress=True)
+   ```
+
+### **Option 2: Downgrade `torchvision`**
+If modifying the code is not feasible, downgrade `torchvision` to a compatible version:
+```bash
+pip install torchvision==0.13.1
+```
+After downgrading, restart your script and check if it works.
+
+---
+
 ## **Usage**
 ### **Run Main Script**
 ```bash
 python main.py
 ```
-
 By default, it runs **text detection**. You can modify `main.py` to run **line detection**.
 
 ### **Modify Processing Type**

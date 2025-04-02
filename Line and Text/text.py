@@ -1,4 +1,3 @@
-# text.py
 import cv2
 import pytesseract
 from craft_text_detector import Craft
@@ -54,18 +53,18 @@ def recognize_text_from_boxes(image, text_boxes):
         # Use Tesseract to recognize text
         custom_config = r'--oem 3 --psm 6'
         text = pytesseract.image_to_string(processed_image, config=custom_config)
-        recognized_text.append(text.strip())  # Remove extra whitespace
+        recognized_text.append((text.strip(), x_min, y_min, x_max, y_max))  # Store text and its bounding box coordinates
 
     return recognized_text
 
-# Function to save detected text into a CSV file
+# Function to save detected text along with its bounding boxes into a CSV file
 def save_text_to_csv(recognized_text, output_csv_path):
-    """Save recognized text into a CSV file."""
+    """Save recognized text and bounding boxes into a CSV file."""
     with open(output_csv_path, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        writer.writerow(['Detected Text'])  # Write the header
-        for text in recognized_text:
-            writer.writerow([text])  # Write each recognized text as a row
+        writer.writerow(['Detected Text', 'x_min', 'y_min', 'x_max', 'y_max'])  # Write header with bounding box columns
+        for text, x_min, y_min, x_max, y_max in recognized_text:
+            writer.writerow([text, x_min, y_min, x_max, y_max])  # Write each recognized text with bounding box
 
 # Main function to run the detection, recognition, and saving to CSV
 def process_image(image_path, output_csv_path):
@@ -84,7 +83,7 @@ def process_image(image_path, output_csv_path):
         pts = box.astype(int)
         cv2.polylines(cropped_image, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
 
-    # Step 5: Save recognized text to a CSV file
+    # Step 5: Save recognized text to a CSV file along with bounding boxes
     save_text_to_csv(recognized_text, output_csv_path)
 
-    print(f"Detected text has been saved to {output_csv_path}")
+    print(f"Detected text and bounding boxes have been saved to {output_csv_path}")
